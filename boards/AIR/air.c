@@ -14,41 +14,41 @@
 #include "can_api.h"
 #include "log_uart.h"
 
-/*----- Outputs -----*/
-#define LED1				PC4
-#define LED2				PC5
-#define LED_PORT	PORTC
+/*----- Outputs (PORTs because we write them)-----*/
+#define LED1				PD5
+#define LED2				PD6
+#define LED3        PD7
+#define LED_PORT	PORTD
 
 #define RJ45_LED1				PB0
 #define RJ45_LED2				PB1
 #define RJ45_LED_PORT	PORTB
 
-#define PRECHARGE_CTRL			PB0
+#define PRECHARGE_CTRL			PB2
 #define PRECHARGE_PORT		PORTB
-#define AIRMINUS_CTRL				PB1
-#define AIRMINUS_PORT			PORTB
+#define AIRMINUS_LSD			  	PC6
+#define AIRMINUS_PORT			PORTC
 
-/*----- Inputs -----*/
-#define PIN_AIRPLUS_AUX				 PC6 // PCINT14
-#define INREG_AIRPLUS_AUX			PINC
-#define PIN_AIRMINUS_AUX			 PC7 // PCINT15
-#define INREG_AIRMINUS_AUX		PINC // INREG -> input register
+/*----- Inputs (PINs because we read them) -----*/
+#define PIN_AIRPLUS_WELD_DET				 PC4 // PCINT12
+#define INREG_AIRPLUS_WELD_DET			PINC
+#define PIN_AIRMINUS_WELD_DET			   PC5 // PCINT13
+#define INREG_AIRPMINUS_WELD_DET	 	PINC // INREG -> input register
 
-#define PIN_BMS_STATUS			PB2 // PCINT2
-#define INREG_BMS_STATUS	 PINB
-#define PIN_IMD_STATUS			PB3 // PCINT3
-#define INREG_IMD_STATUS	 PINB
-#define PIN_SS_HVD					PB6 // PCINT6
+#define PIN_BMS_SENSE		  	PC0 // PCINT8
+#define INREG_BMS_SENSE	   PINC
+#define PIN_IMD_SENSE			  PD0 // PCINT16
+#define INREG_IMD_SENSE	   PIND
+#define PIN_SS_HVD					PB7 // PCINT7
 #define INREG_SS_HVD			 PINB
-#define PIN_SS_MP						PD0 // PCINT16
-#define INREG_SS_MP				 PIND
-#define PIN_SS_IMD					PC0 // PCINT8
-#define INREG_SS_IMD			 PINC
-#define PIN_SS_BMS					PC1 // PCINT9
+#define PIN_SS_TSCONN				PB5 // PCINT5
+#define INREG_SS_TSCONN		 PINB
+#define PIN_SS_IMD					PB4 // PCINT4
+#define INREG_SS_IMD			 PINB
+#define PIN_SS_BMS					PC7 // PCINT9
 #define INREG_SS_BMS			 PINC
-
-#define PIN_COOLING_PRESSURE		  	PB7 // PCINT7  ADC4
-#define INREG_COOLING_PRESSURE		 PINB
+#define PIN_SS_TSMS					PB3 // PCINT3
+#define INREG_SS_TSMS			 PINB
 
 
 /*----- Fault Codes -----*/
@@ -66,19 +66,21 @@
 #define FAULT_CODE_PRECHARGE_INCOMPLETE				0X0B // if precharge is too slow or stopping below MINIMUM_VOLTAGE_AFTER_PRECHARGE
 
 /*----- gFlag -----*/
-#define UPDATE_STATUS       	0
-#define FLAG_AIRPLUS_AUX    	1
-#define FLAG_AIRMINUS_AUX   	2
-#define FLAG_IMD_STATUS     	3
-#define FLAG_BMS_STATUS     	4
-#define FLAG_TSMS_STATUS		  5
-#define FLAG_COOLING_PRESSURE	6
+#define UPDATE_STATUS       	 0
+#define FLAG_AIRPLUS_WELD_DET  1
+#define FLAG_AIRMINUS_WELD_DET 2
+#define FLAG_IMD_STATUS      	 3
+#define FLAG_BMS_STATUS      	 4
+#define FLAG_TSMS_STATUS		   5
+#define FLAG_CAR_CHARGING			 6
 
 /*----- sFlag -----*/
-#define FLAG_SS_HVD   0
-#define FLAG_SS_MP    1 // MP -> main pack connector
-#define FLAG_SS_IMD   2
-#define FLAG_SS_BMS   3
+#define FLAG_SS_HVD       0
+#define FLAG_SS_TSCONN    1
+#define FLAG_SS_IMD       2
+#define FLAG_SS_BMS       3
+#define FLAG_SS_TSMS      4
+#define FLAG_SS_HVD_CONN  5
 
 /*----- TS Statuses -----*/
 #define TS_STATUS_DEENERGIZED 		0x00
@@ -88,9 +90,9 @@
 #define TS_STATUS_DISCHARGING 		0x04
 #define TS_STATUS_PANIC						0x05
 
-/*----- MOBs -----*/
+/*----- MOBs (CAN message offsets)-----*/
 #define MOB_BROADCAST_CRITICAL	0 // Broadcasts precharge sequence complete
-#define MOB_MOTORCONTROLLER 		1 // Receives messages from motor controller
+#define MOB_BMS 								1 //Reading BMS for charging
 #define MOB_BROADCAST_PANIC 		2 // Panic MOB for BMS to open shutdown circuit
 #define MOB_BROADCAST_SS				3
 #define	MOB_BRAKELIGHT					4
@@ -102,33 +104,34 @@
 #define OVF_COUNT_PRECHARGING 			0x10 // roughly 2 seconds -> 3 time constants (1/(2*pi*1k*440uF))*3 = 1.08ish
 #define OVF_COUNT_DISCHARGING 			0x1F // roughly 4 seconds -> 3 times as long as precharge (3k res vs 1k res) -> 3.24ish
 
-/*----- Other Macros -----*/
-#define MINIMUM_VOLTAGE_AFTER_PRECHARGE		0x708 // 1800 -> voltage message is 10x, 180V, 90% of minimum pack voltage (200V)
-
-volatile uint8_t gFlag = 0x00; // Global Flag
+volatile uint8_t gFlag = 0x00; // Global Flag. Tells us that gFlag will change and to assign it to an unsigned 8bit integer
 volatile uint8_t sFlag = 0x00; // Shutdown Sense Flag
 volatile uint8_t LEDtimer = 0x00;
-volatile uint16_t motorControllerVoltage = 0xffff;
 uint8_t tractiveSystemStatus = 0;
 volatile uint8_t timer1OverflowCount = 0;
 
 char uart_buf[64];
+// put these 2 variables into CAN interrupt function
 uint8_t msgBL[5];
 uint8_t msgMC[2];
+uint8_t msgBMS[8]; //will change when can code is updated
 
-uint8_t msgCritical[4] = {0,0,0,0};
-#define MSG_INDEX_PRECHARGE_STATUS	0
-#define MSG_INDEX_AIRPLUS_AUX				1
-#define MSG_INDEX_AIRMINUS_AUX			2
-#define MSG_INDEX_HV_CHECK					3
+uint8_t msgCritical[6] = {0,0,0,0,0,0};
+#define MSG_INDEX_ERROR_CODE				0
+#define MSG_INDEX_PRECHARGE_STATUS  1
+#define MSG_INDEX_AIRPLUS_AUX			  2
+#define MSG_INDEX_AIRMINUS_AUX		  3
+#define MSG_INDEX_HV_CHECK					4
+#define MSG_INDEX_DEBUGGING				  5
 
 uint8_t msgShutdownSense[6] = {0,0,0,0,0,0};
-#define MSG_INDEX_SS_MP					0
+#define MSG_INDEX_SS_TSCONN					0
 #define MSG_INDEX_SS_HVD				1
 #define MSG_INDEX_SS_BMS				2
 #define MSG_INDEX_SS_IMD				3
 #define MSG_INDEX_BMS_STATUS		4
 #define MSG_INDEX_IMD_STATUS		5
+#define MSG_INDEX_SS_TSMS		    6 // might change
 
 ISR(TIMER0_COMPA_vect) {
     /*
@@ -149,14 +152,14 @@ ISR(TIMER1_OVF_vect) {
 		timer1OverflowCount++;
 }
 
-ISR(PCINT0_vect) { // PCINT0-7 -> BMS_STATUS, IMD_STATUS, SS_HVD, COOLING_PRESSURE
-    if(bit_is_set(INREG_BMS_STATUS,PIN_BMS_STATUS)){
+ISR(PCINT0_vect) { // PCINT0-7 -> BMS_STATUS, IMD_STATUS, SS_HVD, SS_TSMS
+    if(bit_is_set(INREG_BMS_SENSE,PIN_BMS_SENSE)){
 		 gFlag |= _BV(FLAG_BMS_STATUS);
 		} else {
 		 gFlag &= ~_BV(FLAG_BMS_STATUS);
 		}
 
-		if(bit_is_set(INREG_IMD_STATUS,PIN_IMD_STATUS)){
+		if(bit_is_set(INREG_IMD_SENSE,PIN_IMD_SENSE)){
 		 gFlag |= _BV(FLAG_IMD_STATUS);
 		} else {
 		 gFlag &= ~_BV(FLAG_IMD_STATUS);
@@ -172,26 +175,26 @@ ISR(PCINT0_vect) { // PCINT0-7 -> BMS_STATUS, IMD_STATUS, SS_HVD, COOLING_PRESSU
 		 LOG_println(hvd_bad, strlen(hvd_bad));
 		}
 
-		if(bit_is_clear(INREG_COOLING_PRESSURE,PIN_COOLING_PRESSURE)){
-		 gFlag |= _BV(FLAG_COOLING_PRESSURE);
+		if(bit_is_clear(INREG_SS_TSMS,PIN_SS_TSMS)){
+		 gFlag |= _BV(FLAG_SS_TSMS);
 		} else {
-		 gFlag &= ~_BV(FLAG_COOLING_PRESSURE);
+		 gFlag &= ~_BV(FLAG_SS_TSMS);
 		}
 }
 
-ISR(PCINT1_vect) { // PCINT8-15 -> AIRPLUS_AUX, AIRMINUS_AUX, SS_IMD, SS_BMS
-		if(bit_is_set(INREG_AIRPLUS_AUX,PIN_AIRPLUS_AUX)){
-		 gFlag |= _BV(FLAG_AIRPLUS_AUX);
+ISR(PCINT1_vect) { // PCINT14, 15, 8, 9 -> AIRPLUS_AUX, AIRMINUS_AUX, SS_IMD, SS_BMS
+		if(bit_is_set(INREG_AIRPLUS_WELD_DET,PIN_AIRPLUS_WELD_DET)){
+		 gFlag |= _BV(FLAG_AIRPLUS_WELD_DET);
 		 char plus[]="plus";
 		 LOG_println(plus, strlen(plus));
 		} else {
-		 gFlag &= ~_BV(FLAG_AIRPLUS_AUX);
+		 gFlag &= ~_BV(FLAG_AIRPLUS_WELD_DET);
 		}
 
-		if(bit_is_set(INREG_AIRMINUS_AUX,PIN_AIRMINUS_AUX)){
-		 gFlag |= _BV(FLAG_AIRMINUS_AUX);
+		if(bit_is_set(INREG_AIRPMINUS_WELD_DET,PIN_AIRPMINUS_WELD_DET)){
+		 gFlag |= _BV(FLAG_AIRMINUS_WELD_DET);
 		} else {
-		 gFlag &= ~_BV(FLAG_AIRMINUS_AUX);
+		 gFlag &= ~_BV(FLAG_AIRMINUS_WELD_DET);
 		}
 
 		if(bit_is_clear(INREG_SS_IMD,PIN_SS_IMD)){
@@ -207,47 +210,37 @@ ISR(PCINT1_vect) { // PCINT8-15 -> AIRPLUS_AUX, AIRMINUS_AUX, SS_IMD, SS_BMS
 		}
 }
 
-ISR(PCINT2_vect) { // PCINT16-23 -> SS_MP
-		if(bit_is_clear(INREG_SS_MP,PIN_SS_MP)){
-		 sFlag |= _BV(FLAG_SS_MP);
+ISR(PCINT2_vect) { // PCINT16 -> SS_TSCONN
+		if(bit_is_clear(INREG_SS_TSCONN,PIN_SS_TSCONN)){
+		 sFlag |= _BV(FLAG_SS_TSCONN);
 		} else {
-		 sFlag &= ~_BV(FLAG_SS_MP);
+		 sFlag &= ~_BV(FLAG_SS_TSCONN);
 		}
 }
-
+//
 ISR(CAN_INT_vect) {
-		CANPAGE = (MOB_MOTORCONTROLLER << MOBNB0);
+		CANPAGE = (MOB_BMS << MOBNB0);
 	  if (bit_is_set(CANSTMOB,RXOK)) {
-	      msgMC[0] = CANMSG;
-	      msgMC[1] = CANMSG;
+			// unsure which message it will be, check can_api
+	      msgBMS[0] = CANMSG;
+				msgBMS[1] = CANMSG;
+				msgBMS[2] = CANMSG;
+				msgBMS[3] = CANMSG;
+				msgBMS[4] = CANMSG;
 
-	      motorControllerVoltage = msgMC[0] | (msgMC[1]<<8);
-
-	      CANSTMOB = 0x00;
-	      CAN_wait_on_receive(MOB_MOTORCONTROLLER,
-	                          CAN_ID_MC_VOLTAGE,
-	                          CAN_LEN_MC_VOLTAGE,
-	                          CAN_MSK_SINGLE);
-	  }
-		CANPAGE = (MOB_BRAKELIGHT << MOBNB0);
-	  if (bit_is_set(CANSTMOB,RXOK)) {
-	      msgBL[0] = CANMSG; msgBL[1] = CANMSG; msgBL[2] = CANMSG; msgBL[3] = CANMSG; // increment CANMSG to get to TSMS info
-				msgBL[4] = CANMSG; // TSMS sense
-
-	      if(msgBL[4]==0xff){
-					gFlag |= _BV(FLAG_TSMS_STATUS);
+	      if(msgBMS[4]==0xff){
+					gFlag |= _BV(FLAG_CAR_CHARGING);
 					//RJ45_LED_PORT |= _BV(RJ45_LED2);
 				} else {
-					gFlag &= ~_BV(FLAG_TSMS_STATUS);
+					gFlag &= ~_BV(FLAG_CAR_CHARGING);
 					//RJ45_LED_PORT &= ~_BV(RJ45_LED2);
 				}
 
 	      CANSTMOB = 0x00;
-	      CAN_wait_on_receive(MOB_BRAKELIGHT,
-	                          CAN_ID_BRAKE_LIGHT,
-	                          CAN_LEN_BRAKE_LIGHT,
+	      CAN_wait_on_receive(MOB_BMS,
+	                          CAN_ID_BMS_CORE,
+	                          CAN_LEN_BMS_CORE,
 	                          CAN_MSK_SINGLE);
-	  }
 }
 
 void initTimer0(void) {
@@ -276,8 +269,9 @@ void resetTimer1(void) {
 
 void setOutputs(void) {
 		//Sets these pins at outputs
-		DDRB |= _BV(PRECHARGE_CTRL) | _BV(AIRMINUS_CTRL) | _BV(RJ45_LED1) | _BV(RJ45_LED2);
-		DDRC |= _BV(LED1) | _BV(LED2);
+		DDRB |= _BV(PRECHARGE_CTRL) | _BV(RJ45_LED1) | _BV(RJ45_LED2);
+		DDRC |= _BV(AIRMINUS_LSD);
+		DDRD |= _BV(LED1) | _BV(LED2) | _BV(LED3);
 }
 
 void readAllInputs(void){
@@ -286,86 +280,35 @@ void readAllInputs(void){
 		PCINT2_vect();
 }
 
-void panic (uint8_t fault_code) {
-	//LED_PORT ^= _BV(LED1); // DEBUG
-	tractiveSystemStatus = TS_STATUS_PANIC;
-	uint8_t msg[1] = {fault_code};
-	CAN_transmit(MOB_BROADCAST_PANIC,
-								CAN_ID_PANIC,
-								CAN_LEN_PANIC,
-								msg);
-}
 
-void checkBMSPowerStagePlausibility (void) { // tested and working
-		if ( (bit_is_set(gFlag, FLAG_BMS_STATUS) && bit_is_set(sFlag, FLAG_SS_MP) && bit_is_clear(sFlag, FLAG_SS_BMS))
+void checkBMSPowerStagePlausibility (void) { // tested and working. needs some type of delay as to when the check is made so it's not too soon
+		if ( (bit_is_set(gFlag, FLAG_BMS_STATUS) && bit_is_set(sFlag, FLAG_SS_TSCONN) && bit_is_clear(sFlag, FLAG_SS_BMS))
 		|| (bit_is_clear(gFlag, FLAG_BMS_STATUS) && bit_is_set(sFlag, FLAG_SS_BMS)) ) {
-			panic(FAULT_CODE_BMS_IMPLAUSIBILITY);
+			msgCritical[MSG_INDEX_ERROR_CODE] = FAULT_CODE_BMS_IMPLAUSIBILITY;
 		}
 }
 
 void checkIMDPowerStagePlausibility (void) { // tested and working
 		if ( (bit_is_set(gFlag, FLAG_IMD_STATUS) && bit_is_set(sFlag, FLAG_SS_BMS) && bit_is_clear(sFlag, FLAG_SS_IMD))
 		|| (bit_is_clear(gFlag, FLAG_IMD_STATUS) && bit_is_set(sFlag, FLAG_SS_IMD)) ) {
-			panic(FAULT_CODE_IMD_IMPLAUSIBILITY);
+			msgCritical[MSG_INDEX_ERROR_CODE] = FAULT_CODE_IMD_IMPLAUSIBILITY;
 		}
 }
 
 void checkAIRPLUS (void) {
-		if ( bit_is_set(gFlag, FLAG_AIRPLUS_AUX) && bit_is_clear(gFlag, FLAG_TSMS_STATUS) ) {
-			panic(FAULT_CODE_AIRPLUS_WELD);
-		} else if ( bit_is_clear(gFlag, FLAG_AIRPLUS_AUX) && bit_is_set(gFlag, FLAG_TSMS_STATUS) ) {
-			panic(FAULT_CODE_AIRPLUS_CONTROL_LOSS);
+		if ( bit_is_set(gFlag, FLAG_AIRPLUS_WELD_DET) && bit_is_clear(gFlag, FLAG_TSMS_STATUS) ) {
+			msgCritical[MSG_INDEX_ERROR_CODE] = FAULT_CODE_AIRPLUS_WELD;
+		} else if ( bit_is_clear(gFlag, FLAG_AIRPLUS_WELD_DET) && bit_is_set(gFlag, FLAG_TSMS_STATUS) ) {
+			msgCritical[MSG_INDEX_ERROR_CODE] = FAULT_CODE_AIRPLUS_CONTROL_LOSS;
 		}
 }
 
 void checkAIRMINUS (void) {
-		if ( bit_is_clear(AIRMINUS_PORT, AIRMINUS_CTRL) && bit_is_set(gFlag, FLAG_AIRMINUS_AUX) ) {
-			panic(FAULT_CODE_AIRMINUS_WELD);
-		} else if ( bit_is_set(AIRMINUS_PORT, AIRMINUS_CTRL) && bit_is_clear(gFlag, FLAG_AIRMINUS_AUX) ) {
-			panic(FAULT_CODE_AIRMINUS_CONTROL_LOSS);
+		if ( bit_is_clear(AIRMINUS_PORT, AIRMINUS_LSD) && bit_is_set(gFlag, FLAG_AIRMINUS_WELD_DET) ) {
+			msgCritical[MSG_INDEX_ERROR_CODE] = FAULT_CODE_AIRMINUS_WELD;
+		} else if ( bit_is_set(AIRMINUS_PORT, AIRMINUS_LSD) && bit_is_clear(gFlag, FLAG_AIRMINUS_WELD_DET) ) {
+			msgCritical[MSG_INDEX_ERROR_CODE] = FAULT_CODE_AIRMINUS_CONTROL_LOSS;
 		}
-}
-
-void ADC_init(void) {
-    /* Get the Analog to Digital Converter started (ADC)
-     * Set ADC Enable, and set AD Prescaler to 0x101
-     * Divides clock frequency by 32 for AD clock */
-    ADCSRA |= _BV(ADEN) | _BV(ADPS2) | _BV(ADPS0);
-
-    //Enable interal reference voltage
-    ADCSRB &= _BV(AREFEN);
-
-    //Set internal reference voltage as AVcc
-    ADMUX |= _BV(REFS0);
-}
-
-uint8_t adcReadCoolingPin (void) { // TODO where is this going in CAN?
-				    // not currently in CAN. we'd have to change the CAN api
-				    // and re-flash every board to do it properly. Not worth
-				    // the effort in my opinion. -Corey 5.29.19
-
-		//uncomment to disable pull-up if need be
-		//PORTB &= ~_BV(PIN_COOLING_PUMP);
-
-		ADMUX = _BV(REFS0);
-		ADMUX |= 4; //Cooling pressure pin is ADC4
-		ADCSRA |= _BV(ADSC);
-		loop_until_bit_is_clear(ADCSRA, ADSC);
-		uint16_t val = ADC;
-
-		// Uncomment when we need it. -Corey
-		// Don't forget to uncomment the .h file at the top
-		//LOG_init();
-		//char uart_buf[64];
-  	sprintf(uart_buf, "Cooling Pressure: %d", val);
-  	LOG_println(uart_buf, strlen(uart_buf));
-
-		if(val>200 && val<800){
-			return 1;
-		} else {
-			return 0;
-		}
-
 }
 
 void conditionalMessageSet (uint8_t reg, uint8_t bit, uint8_t msg[], uint8_t index, uint8_t condHigh, uint8_t condLow) {
@@ -377,12 +320,12 @@ void conditionalMessageSet (uint8_t reg, uint8_t bit, uint8_t msg[], uint8_t ind
 }
 
 void sendShutdownSenseCANMessage (void) {
-	conditionalMessageSet(sFlag, FLAG_SS_MP, msgShutdownSense, MSG_INDEX_SS_MP, 0xff, 0x00);
-	conditionalMessageSet(sFlag, FLAG_SS_HVD, msgShutdownSense, MSG_INDEX_SS_HVD, 0xff, 0x00);
-	conditionalMessageSet(sFlag, FLAG_SS_IMD, msgShutdownSense, MSG_INDEX_SS_IMD, 0xff, 0x00);
-	conditionalMessageSet(sFlag, FLAG_SS_BMS, msgShutdownSense, MSG_INDEX_SS_BMS, 0xff, 0x00);
-	conditionalMessageSet(gFlag, FLAG_BMS_STATUS, msgShutdownSense, MSG_INDEX_BMS_STATUS, 0xff, 0x00);
-	conditionalMessageSet(gFlag, FLAG_IMD_STATUS, msgShutdownSense, MSG_INDEX_IMD_STATUS, 0xff, 0x00);
+	msgShutdownSense[MSG_INDEX_SS_TSCONN] = bit_is_set(sFlag, FLAG_SS_TSCONN) ? 0xff : 0x00;
+	msgShutdownSense[MSG_INDEX_SS_HVD] = bit_is_set(sFlag, FLAG_SS_HVD) ? 0xff : 0x00;
+	msgShutdownSense[MSG_INDEX_SS_IMD] = bit_is_set(sFlag, FLAG_SS_IMD) ? 0xff : 0x00;
+	msgShutdownSense[MSG_INDEX_SS_BMS_STATUS] = bit_is_set(sFlag, FLAG_SS_BMS_STATUS) ? 0xff : 0x00;
+	msgShutdownSense[MSG_INDEX_SS_IMD_STATUS] = bit_is_set(sFlag, FLAG_SS_IMD_STATUS) ? 0xff : 0x00;
+	msgShutdownSense[MSG_INDEX_SS_TSMS] = bit_is_set(sFlag, FLAG_SS_TSMS) ? 0xff : 0x00;
 	CAN_transmit(MOB_BROADCAST_SS,
 								CAN_ID_AIR_CONTROL_SENSE,
 								CAN_LEN_AIR_CONTROL_SENSE,
@@ -391,62 +334,59 @@ void sendShutdownSenseCANMessage (void) {
 
 void sendCriticalCANMessage (void) {
 	// TODO -> hv check?
-	conditionalMessageSet(gFlag, FLAG_AIRPLUS_AUX, msgCritical, MSG_INDEX_AIRPLUS_AUX, 0xff, 0x00);
-	conditionalMessageSet(gFlag, FLAG_AIRMINUS_AUX, msgCritical, MSG_INDEX_AIRMINUS_AUX, 0xff, 0x00);
+	conditionalMessageSet(gFlag, FLAG_AIRPLUS_WELD_DET, msgCritical, MSG_INDEX_AIRPLUS_AUX, 0xff, 0x00);
+	conditionalMessageSet(gFlag, FLAG_AIRMINUS_WELD_DET, msgCritical, MSG_INDEX_AIRMINUS_AUX, 0xff, 0x00);
 	CAN_transmit(MOB_BROADCAST_CRITICAL,
 								CAN_ID_AIR_CONTROL_CRITICAL,
 								CAN_LEN_AIR_CONTROL_CRITICAL,
 								msgCritical);
-}
 
 int main (void) {
     initTimer0();
 		initTimer1();
     sei(); //Inititiates interrupts for the ATMega
     CAN_init(CAN_ENABLED);
-		ADC_init();
 		LOG_init();
-    CAN_wait_on_receive(MOB_MOTORCONTROLLER, CAN_ID_MC_VOLTAGE, CAN_LEN_MC_VOLTAGE, CAN_MSK_SINGLE);
 		CAN_wait_on_receive(MOB_BRAKELIGHT, CAN_ID_BRAKE_LIGHT, CAN_LEN_BRAKE_LIGHT, CAN_MSK_SINGLE);
 
     // Enable interrupt
     PCICR |= _BV(PCIE0) | _BV(PCIE1) | _BV(PCIE2);
-		PCMSK0 |= _BV(PCINT2) | _BV(PCINT3) | _BV(PCINT6) | _BV(PCINT7);
-		PCMSK1 |= _BV(PCINT8) | _BV(PCINT9) | _BV(PCINT14) | _BV(PCINT15);
+		PCMSK0 |= _BV(PCINT3) | _BV(PCINT4) | _BV(PCINT5) | _BV(PCINT6) | _BV(PCINT7);
+		PCMSK1 |= _BV(PCINT8) | _BV(PCINT12) | _BV(PCINT13) | _BV(PCINT15);
 		PCMSK2 |= _BV(PCINT16);
 
 		setOutputs();
-		PORTB |= _BV(PIN_COOLING_PRESSURE); // Set internal pull up resistor
+
 		readAllInputs(); // in case they are set high before micro starts up and therefore won't trigger an interrupt
 
-		uint8_t charging = adcReadCoolingPin();
+	 // add a way to tell if car is charging or not
+	  uint8_t charging = ;
 		uint8_t chargingStartupComplete = 0;
 
 		while(charging) {
 			if(bit_is_set(gFlag, UPDATE_STATUS)){
-
 				char chrg[]="charging";
 		  	LOG_println(chrg, strlen(chrg));
 
 				gFlag &= ~_BV(UPDATE_STATUS); // TODO IMD STATUS PIN TURNS OFF SLOW DEBUG
 				RJ45_LED_PORT |= _BV(RJ45_LED1);
 
-				/*if(bit_is_set(INREG_AIRPLUS_AUX,PIN_AIRPLUS_AUX)){
-				 gFlag |= _BV(FLAG_AIRPLUS_AUX);
+				/*if(bit_is_set(INREG_AIRPLUS_WELD_DET,PIN_AIRPLUS_WELD_DET)){
+				 gFlag |= _BV(FLAG_AIRPLUS_WELD_DET);
 				 char plus[]="plus closed";
 				 LOG_println(plus, strlen(plus));
 				} else {
-				 gFlag &= ~_BV(FLAG_AIRPLUS_AUX);
+				 gFlag &= ~_BV(FLAG_AIRPLUS_WELD_DET);
 				 char op[]="plus open";
 				 LOG_println(op, strlen(op));
 			 }*/
 
-				if(bit_is_set(gFlag, FLAG_AIRPLUS_AUX) && ~chargingStartupComplete){
+				if(bit_is_set(gFlag, FLAG_AIRPLUS_WELD_DET) && ~chargingStartupComplete){
 					//_delay_ms(2000);
 					RJ45_LED_PORT |= _BV(RJ45_LED2);
 					PRECHARGE_PORT |= _BV(PRECHARGE_CTRL);
 					_delay_ms(2000);
-					AIRMINUS_PORT |= _BV(AIRMINUS_CTRL);
+					AIRMINUS_PORT |= _BV(AIRMINUS_LSD);
 					PRECHARGE_PORT &= ~_BV(PRECHARGE_CTRL);
 					chargingStartupComplete = 1;
 					RJ45_LED_PORT &= ~_BV(RJ45_LED2);
@@ -460,8 +400,8 @@ int main (void) {
 
 				gFlag &= ~_BV(UPDATE_STATUS); // TODO IMD STATUS PIN TURNS OFF SLOW DEBUG
 
-				//checkBMSPowerStagePlausibility();
-				//checkIMDPowerStagePlausibility(); // delay this for IMD startup time
+				checkBMSPowerStagePlausibility();
+				checkIMDPowerStagePlausibility(); // delay this for IMD startup time
 				//checkAIRPLUS(); // TODO think about charging, currently compares AIR plus to TSMS can message, won't work in charging
 				//checkAIRMINUS();
 				sendShutdownSenseCANMessage();
@@ -469,8 +409,10 @@ int main (void) {
 
 				if(tractiveSystemStatus==TS_STATUS_DEENERGIZED){
 						PRECHARGE_PORT &= ~_BV(PRECHARGE_CTRL); // open precharge relay, sanity check
-						AIRMINUS_PORT &= ~_BV(AIRMINUS_CTRL); // open air minus, sanity check
-						if(bit_is_set(gFlag, FLAG_TSMS_STATUS)){ // if tsms closed
+						RJ45_LED_PORT &= ~_BV(RJ45_LED1);
+						AIRMINUS_PORT &= ~_BV(AIRMINUS_LSD); // open air minus, sanity check
+						RJ45_LED_PORT &= ~_BV(RJ45_LED2);
+						if(bit_is_set(gFlag, FLAG_AIRPLUS_WELD_DET)){ // if tsms closed
 							char tsms_closed[]="tsms_closed";
 							LOG_println(tsms_closed, strlen(tsms_closed));
 							char precharge_delay[]="precharge_delay";
@@ -479,22 +421,19 @@ int main (void) {
 							resetTimer1(); // reset timer 1
 						}
 				} else if(tractiveSystemStatus==TS_STATUS_PRECHARGE_DELAY) {
-						if(bit_is_clear(gFlag, FLAG_TSMS_STATUS)){
+						if(bit_is_clear(gFlag, FLAG_AIRPLUS_WELD_DET)){ //IS THIS RIGHT??? last year was FLAG_TSMS_STATUS
 							tractiveSystemStatus = TS_STATUS_DEENERGIZED;
 							char tsms_open[]="tsms_open";
 							LOG_println(tsms_open, strlen(tsms_open));
 							char deenergized[]="deenergized";
 							LOG_println(deenergized, strlen(deenergized));
-						} else if(motorControllerVoltage > 0){ // if voltage is increasing, panic(FAULT_CODE_PRECHARGE_STUCK)
-							panic(FAULT_CODE_PRECHARGE_STUCK);
-							char precharge_stuck[]="precharge_stuck";
-							LOG_println(precharge_stuck, strlen(precharge_stuck));
 						} else if(timer1OverflowCount>OVF_COUNT_PRECHARGE_DELAY){ // if precharge delay time elapsed
 							char precharge_delay_over[]="precharge_delay_over";
 							LOG_println(precharge_delay_over, strlen(precharge_delay_over));
 							tractiveSystemStatus = TS_STATUS_PRECHARGING; // set status to precharging
 							msgCritical[MSG_INDEX_PRECHARGE_STATUS] = 0x0f; // update critical can message to precharge started
 							PRECHARGE_PORT |= _BV(PRECHARGE_CTRL); // close precharge relay
+							RJ45_LED_PORT |= _BV(RJ45_LED1);
 							resetTimer1(); // reset timer 1
 							char precharging[]="precharging";
 							LOG_println(precharging, strlen(precharging));
@@ -507,47 +446,31 @@ int main (void) {
 						LOG_println(discharging, strlen(discharging));
 						tractiveSystemStatus = TS_STATUS_DISCHARGING;
 						PRECHARGE_PORT &= ~_BV(PRECHARGE_CTRL); // open precharge relay
+						RJ45_LED_PORT &= ~_BV(RJ45_LED1);
 						msgCritical[MSG_INDEX_PRECHARGE_STATUS] = 0x00; // update critical can message to precharge not started
+						resetTimer1();
 					} else if(timer1OverflowCount>OVF_COUNT_PRECHARGING){
 						char precharge_over[]="precharge_over";
 						LOG_println(precharge_over, strlen(precharge_over));// if precharging time elapsed
-							//if(0){ //TODO get rid of this
-							if(motorControllerVoltage == 0){ // if voltage is 0
-								char precharge_control_loss[]="control_loss";
-								LOG_println(precharge_control_loss, strlen(precharge_control_loss));
-								panic(FAULT_CODE_PRECHARGE_CONTROL_LOSS); // panic(FAULT_CODE_PRECHARGE_CONTROL_LOSS)
-							//} else if(1){
-							} else if(motorControllerVoltage>MINIMUM_VOLTAGE_AFTER_PRECHARGE){ // if voltage is high enough
-								char precharge_good[]="precharge_good";
-								LOG_println(precharge_good, strlen(precharge_good));
-								AIRMINUS_PORT |= _BV(AIRMINUS_CTRL); // close air minus
-								_delay_ms(100); // let air minus close before we do stuff
-								//checkAIRMINUS(); // confirm closure
-								PRECHARGE_PORT &= ~_BV(PRECHARGE_CTRL); // open precharge relay
-								if (tractiveSystemStatus != TS_STATUS_PANIC){ // if we passed AIR minus check
-									char no_panic[]="no_panic";
-									LOG_println(no_panic, strlen(no_panic));
-									tractiveSystemStatus = TS_STATUS_ENERGIZED; // set status to energized
-									msgCritical[MSG_INDEX_PRECHARGE_STATUS] = 0xff; // update critical can message to precharge complete
-									char energized[]="energized";
-									LOG_println(energized, strlen(energized));
-								} else {
-									char sudden_panic[]="sudden_panic";
-									LOG_println(sudden_panic, strlen(sudden_panic));
-								}
-							} else {
-								char precharge_incomplete[]="precharge_incomplete";
-								LOG_println(precharge_incomplete, strlen(precharge_incomplete));
-								panic(FAULT_CODE_PRECHARGE_INCOMPLETE);
-							}
-						}
+						AIRMINUS_PORT |= _BV(AIRMINUS_LSD); // close air minus
+						RJ45_LED_PORT |= _BV(RJ45_LED2);
+						_delay_ms(100); // let air minus close before we do stuff
+						//checkAIRMINUS(); // confirm closure
+						PRECHARGE_PORT &= ~_BV(PRECHARGE_CTRL); // open precharge relay
+						RJ45_LED_PORT &= ~_BV(RJ45_LED1);
+						tractiveSystemStatus = TS_STATUS_ENERGIZED; // set status to energized
+						msgCritical[MSG_INDEX_PRECHARGE_STATUS] = 0xff; // update critical can message to precharge complete
+						char energized[]="energized";
+						LOG_println(energized, strlen(energized));
+					}
 				} else if(tractiveSystemStatus==TS_STATUS_ENERGIZED) {
 						if(bit_is_clear(gFlag, FLAG_TSMS_STATUS)){ //|| bit_is_clear(gFlag, FLAG_COOLING_PRESSURE)){ // if tsms node no longer has shutdown voltage
 							char tsms_open[]="tsms_open";
 							LOG_println(tsms_open, strlen(tsms_open));
 							char discharging[]="discharging";
 							LOG_println(discharging, strlen(discharging));
-							AIRMINUS_PORT &= ~_BV(AIRMINUS_CTRL); // open air minus
+							AIRMINUS_PORT &= ~_BV(AIRMINUS_LSD); // open air minus
+							RJ45_LED_PORT &= ~_BV(RJ45_LED2);
 							msgCritical[MSG_INDEX_PRECHARGE_STATUS] = 0x00; // update critical can message to precharge not started
 							tractiveSystemStatus = TS_STATUS_DISCHARGING; // set status to discharging
 							resetTimer1(); // reset timer 1
@@ -556,24 +479,18 @@ int main (void) {
 						if(timer1OverflowCount>OVF_COUNT_DISCHARGING){ // if discharging time elapsed
 							char discharge_over[]="discharge_over";
 							LOG_println(discharge_over, strlen(discharge_over));
-							if(motorControllerVoltage == 0){ // if voltage is 0
-								tractiveSystemStatus = TS_STATUS_DEENERGIZED; // set status to deenergized
-								char discharge_good[]="discharge_good";
-								LOG_println(discharge_good, strlen(discharge_good));
-								char deenergized[]="deenergized";
-								LOG_println(deenergized, strlen(deenergized));
-							} else { // else
-								panic(FAULT_CODE_DISCHARGE_CONTROL_LOSS); // panic(FAULT_CODE_DISCHARGE_CONTROL_LOSS)
-								char discharge_control_loss[]="discharge_control_loss";
-								LOG_println(discharge_control_loss, strlen(discharge_control_loss));
-							}
+							tractiveSystemStatus = TS_STATUS_DEENERGIZED; // set status to deenergized
+							char deenergized[]="deenergized";
+							LOG_println(deenergized, strlen(deenergized));
 						}
 				} else if(tractiveSystemStatus==TS_STATUS_PANIC) {
 						char discharge_panic[]="panic";
 						LOG_println(discharge_panic, strlen(discharge_panic));
-						AIRMINUS_PORT &= ~_BV(AIRMINUS_CTRL); // open air minus and precharge
+						AIRMINUS_PORT &= ~_BV(AIRMINUS_LSD); // open air minus and precharge
+						RJ45_LED_PORT &= ~_BV(RJ45_LED2);
 						PRECHARGE_PORT &= ~_BV(PRECHARGE_CTRL);
-						panic(FAULT_CODE_GENERAL); // see that panic keeps being sent...
+						RJ45_LED_PORT &= ~_BV(RJ45_LED1);
+						msgCritical[MSG_INDEX_ERROR_CODE] = FAULT_CODE_GENERAL; // see that panic keeps being sent...
 				}
 
 			}
