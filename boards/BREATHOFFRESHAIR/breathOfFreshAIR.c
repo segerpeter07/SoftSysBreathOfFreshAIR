@@ -60,9 +60,10 @@
 // gFlag flag bit names
 #define UPDATE_STATUS 0
 #define BUS_VOLTAGE_RECEIVED 1
-#define GENERAL_TIMER_COMPLETE 2
-#define AIRPLUS_CLOSED 3
-#define AIRMINUS_CLOSED 4
+#define BMS_MESSAGE_RECEIVED 2
+#define GENERAL_TIMER_COMPLETE 3
+#define AIRPLUS_CLOSED 4
+#define AIRMINUS_CLOSED 5
 
 // shutdownSenseFlag flag bit names
 #define TSMS_SENSE 0
@@ -81,11 +82,43 @@
 #define PRECHARGE_TIMEOUT 3
 #define FAILED_DISCHARGE_STUCK_OPEN_CHECK 4
 #define DISCHARGE_TIMEOUT 5
+#define FAILED_STATE_INDEPENDENT_CHECKS 6
+
 
 // Globals
-volatile uint16_t gFlag = 0x00;
+volatile uint8_t gFlag = 0x00;
 volatile uint8_t shutdownSenseFlag = 0x00;
-volatile uint16_t motorControllerVoltage = 0xffff;
+volatile uint16_t bus_voltage = 0xffff;
+volatile uint16_t pack_voltage = 0xffff;
+volatile uint16_t timer1CompareMatchCount = 0x00;
+uint16_t timer1CompareMatchCountThreshold = 0x00;
+const uint8_t number_of_bms_can_messages = 24;
+const uint16_t bms_can_messages[][] = {
+  {CAN_ID_BMS_VOLTAGES_1_1, CAN_LEN_BMS_VOLTAGES_1_1},
+  {CAN_ID_BMS_VOLTAGES_1_2, CAN_LEN_BMS_VOLTAGES_1_2},
+  {CAN_ID_BMS_VOLTAGES_1_3, CAN_LEN_BMS_VOLTAGES_1_3},
+  {CAN_ID_BMS_VOLTAGES_1_4, CAN_LEN_BMS_VOLTAGES_1_4},
+  {CAN_ID_BMS_VOLTAGES_2_1, CAN_LEN_BMS_VOLTAGES_2_1},
+  {CAN_ID_BMS_VOLTAGES_2_2, CAN_LEN_BMS_VOLTAGES_2_2},
+  {CAN_ID_BMS_VOLTAGES_2_3, CAN_LEN_BMS_VOLTAGES_2_3},
+  {CAN_ID_BMS_VOLTAGES_2_4, CAN_LEN_BMS_VOLTAGES_2_4},
+  {CAN_ID_BMS_VOLTAGES_3_1, CAN_LEN_BMS_VOLTAGES_3_1},
+  {CAN_ID_BMS_VOLTAGES_3_2, CAN_LEN_BMS_VOLTAGES_3_2},
+  {CAN_ID_BMS_VOLTAGES_3_3, CAN_LEN_BMS_VOLTAGES_3_3},
+  {CAN_ID_BMS_VOLTAGES_3_4, CAN_LEN_BMS_VOLTAGES_3_4},
+  {CAN_ID_BMS_VOLTAGES_4_1, CAN_LEN_BMS_VOLTAGES_4_1},
+  {CAN_ID_BMS_VOLTAGES_4_2, CAN_LEN_BMS_VOLTAGES_4_2},
+  {CAN_ID_BMS_VOLTAGES_4_3, CAN_LEN_BMS_VOLTAGES_4_3},
+  {CAN_ID_BMS_VOLTAGES_4_4, CAN_LEN_BMS_VOLTAGES_4_4},
+  {CAN_ID_BMS_VOLTAGES_5_1, CAN_LEN_BMS_VOLTAGES_5_1},
+  {CAN_ID_BMS_VOLTAGES_5_2, CAN_LEN_BMS_VOLTAGES_5_2},
+  {CAN_ID_BMS_VOLTAGES_5_3, CAN_LEN_BMS_VOLTAGES_5_3},
+  {CAN_ID_BMS_VOLTAGES_5_4, CAN_LEN_BMS_VOLTAGES_5_4},
+  {CAN_ID_BMS_VOLTAGES_6_1, CAN_LEN_BMS_VOLTAGES_6_1},
+  {CAN_ID_BMS_VOLTAGES_6_2, CAN_LEN_BMS_VOLTAGES_6_2},
+  {CAN_ID_BMS_VOLTAGES_6_3, CAN_LEN_BMS_VOLTAGES_6_3},
+  {CAN_ID_BMS_VOLTAGES_6_4, CAN_LEN_BMS_VOLTAGES_6_4}
+}
 
 /************ ISRs ************/
 ISR(PCINT0_vect) { // PCINT0-7 -> TSMS_SENSE, IMD_SENSE, TSCONN_SENSE, HVDCONN_SENSE, HVD_SENSE
@@ -160,10 +193,30 @@ ISR(CAN_INT_vect) {
 	      uint8_t low_byte = CANMSG;
 	      uint8_t high_byte = CANMSG;
 
-	      motorControllerVoltage = low_byte | (high_byte<<8);
+	      bus_voltage = low_byte | (high_byte<<8);
 
 	      CANSTMOB = 0x00;
         gFlag |= _BV(BUS_VOLTAGE_RECEIVED);
+	  }
+    
+    CANPAGE = (MOB_BMS_VOLTAGE << MOBNB0);
+	  if (bit_is_set(CANSTMOB,RXOK)) {
+	      uint8_t cell_1_high_byte = CANMSG;
+	      uint8_t cell_1_low_byte = CANMSG;
+        uint8_t cell_2_high_byte = CANMSG;
+	      uint8_t cell_2_low_byte = CANMSG;
+        uint8_t cell_3_high_byte = CANMSG;
+	      uint8_t cell_3_low_byte = CANMSG;
+        uint8_t cell_4_high_byte = CANMSG;
+	      uint8_t cell_4_low_byte = CANMSG;
+
+	      pack_voltage += (cell_1_low_byte | (cell_1_high_byte<<8)) >> 13;
+        pack_voltage += (cell_2_low_byte | (cell_2_high_byte<<8)) >> 13;
+        pack_voltage += (cell_3_low_byte | (cell_3_high_byte<<8)) >> 13;
+        pack_voltage += (cell_4_low_byte | (cell_4_high_byte<<8)) >> 13;
+
+	      CANSTMOB = 0x00;
+        gFlag |= _BV(BMS_MESSAGE_RECEIVED);
 	  }
 }
 
@@ -179,6 +232,10 @@ ISR(TIMER0_COMPA_vect) {
 
 ISR(TIMER1_OVF_vect) {
 		timer1OverflowCount++;
+    if (timer1OverflowCount = timer1OverflowCountThreshold) {
+      gFlag |= _BV(GENERAL_TIMER_COMPLETE);
+    }
+    #TODO
 }
 
 /********** TiMeRs ************/
@@ -193,9 +250,13 @@ void initTimer0(void) {
 
 void initTimer1(void) {
 		// Normal operation so no need to set TCCR1A
-		TCCR1B |= _BV(CS11); // prescaler set to 8
-		// 4MHz CPU, prescaler 8, 16-bit timer overflow -> (4000000/8)/(2^16-1) =  7.63 Hz
+		TCCR1B |= _BV(CS10); // no prescaler set
+    uint16_t output_compare_match = 4000;
+    OCR1AL = output_compare_match & 0xFF;
+    OCR1AH = (output_compare_match >> 8);
+		// 4MHz CPU, prescaler 1, 16-bit timer overflow -> (4000000/8)/(2^16-1) =  7.63 Hz
 		TIMSK1 = 0x01; // enable interrupt on overflow
+    #TODO
 }
 
 void resetTimer1(void) {
@@ -203,7 +264,16 @@ void resetTimer1(void) {
 		TCNT1H = 0x00; // write timer count to 0, high byte must be written first per datasheet
 		TCNT1L = 0x00;
 		sei();
-		timer1OverflowCount = 0x00;
+		timer1CompareMatchCount = 0x00;
+    gFlag &= ~_BV(GENERAL_TIMER_COMPLETE);
+}
+
+/*
+Calculates time threshold and resets timer 1
+*/
+void startTimer(uint16_t milliseconds) {
+  timer1CompareMatchCountThreshold = milliseconds;
+  resetTimer1();
 }
 
 /************ STATE FUNCS **************/
@@ -227,15 +297,25 @@ Somehow gets CAN message information, sums pack voltage and returns it
 
 return: uint8_t voltage of pack (maybe x10 or something idfk)
 */
-uint8_t get_pack_voltage (void) {
-  #TODO
-  // maybe use one MOB and iterate through listening to each message
+uint8_t* get_pack_voltage (void) {
+  pack_voltage = 0;
+  for (int i; i < number_of_bms_can_messages; i++) {
+    gFlag &= ~_BV(BMS_VOLTAGE_RECEIVED);
+    CAN_wait_on_receive(MOB_BMS_VOLTAGE,
+  	                          bms_can_messages[i][0], // id
+  	                          bms_can_messages[i][1], // length
+  	                          CAN_MSK_SINGLE);
+    while (bit_is_clear(gFlag, BMS_VOLTAGE_RECEIVED)) {
+      // do nothing, waiting for message to be received
+    }
+  }
+  return *pack_voltage;
 }
 
 /*
 Listen for bus voltage from motor controller
 
-return: uint16_t bus voltage (I think from motor controller it's x10)
+return: uint16_t bus voltage (I think from motor controller it's x10) #TODO
 */
 uint16_t* get_bus_voltage (void) {
 	gFlag &= ~_BV(BUS_VOLTAGE_RECEIVED);
@@ -246,7 +326,7 @@ uint16_t* get_bus_voltage (void) {
   while (bit_is_clear(gFlag, BUS_VOLTAGE_RECEIVED)) {
     // do nothing, waiting for message to be received
   }
-  return *motorControllerVoltage;
+  return *bus_voltage;
 }
 
 /*
@@ -255,7 +335,15 @@ Does precharge. #TODO better dick string
 return: 0 if OK status, 1 if fault, -1 if cancelled
 */
 int8_t do_precharge (void) {
-  #TODO
+  uint16_t *pack_voltage = get_pack_voltage();
+  startTimer(2000);
+	if (bit_is_clear(shutdownSenseFlag, TSMS_SENSE)) {
+		return -1;
+	} else if (*get_bus_voltage()*10 >= pack_voltage*9) { // compare bus voltage to 90% of pack voltage
+		return 0;
+	} else if (bit_is_set(gFlag, GENERAL_TIMER_COMPLETE)) {
+		return 1;
+	}
 }
 
 /*
@@ -273,7 +361,14 @@ Checks if precharge is stuck open.
 return: 0 if OK status, 1 if fault, -1 if cancelled
 */
 int8_t check_precharge_stuck_open (void) {
-  #TODO
+  startTimer(100);
+	if (bit_is_clear(shutdownSenseFlag, TSMS_SENSE)) {
+		return -1;
+	} else if (*get_bus_voltage() > 0) {
+		return 0;
+	} else if (bit_is_set(gFlag, GENERAL_TIMER_COMPLETE)) {
+		return 1;
+	}
 }
 
 /*
@@ -282,16 +377,14 @@ Checks if precharge is stuck closed.
 return: 0 if OK status, 1 if fault, -1 if cancelled
 */
 int8_t check_precharge_stuck_closed (void) {
-	#TODO;
-	startTimer(timerLength);
+	startTimer(1000);
 	if (bit_is_clear(shutdownSenseFlag, TSMS_SENSE)) {
 		return -1;
-	} else if (get_bus_voltage() > 0) {
+	} else if (*get_bus_voltage() > 0) {
 		return 1;
-	} else if (timer up) {
+	} else if (bit_is_set(gFlag, GENERAL_TIMER_COMPLETE)) {
 		return 0;
 	}
-  #TODO
 }
 
 /*
@@ -300,21 +393,47 @@ Checks if discharge is stuck open.
 return: 0 if OK status, 1 if fault, -1 if bus voltage already 0
 */
 int8_t check_discharge_stuck_open (void) {
-  #TODO
+  startTimer(100);
+  uint16_t *bus_voltage = get_bus_voltage();
+	if (*bus_voltage == 0) {
+		return -1;
+	} else if (*get_bus_voltage() < *bus_voltage) { #TODO // deal with bus voltage pointer issue
+		return 0;
+	} else if (bit_is_set(gFlag, GENERAL_TIMER_COMPLETE)) {
+		return 1;
+	}
 }
 
 /*
 Sends shutdown node status CAN message.
 */
 void send_shutdown_CAN_msg (void) {
-  #TODO
+  uint8_t byte0 = if(bit_is_set(shutdownSenseFlag, TSMS_SENSE)*0xFF;
+  uint8_t byte1 = if(bit_is_set(shutdownSenseFlag, IMD_SENSE)*0xFF;
+  uint8_t byte2 = if(bit_is_set(shutdownSenseFlag, TSCONN_SENSE)*0xFF;
+  uint8_t byte3 = if(bit_is_set(shutdownSenseFlag, HVDCONN_SENSE)*0xFF;
+  uint8_t byte4 = if(bit_is_set(shutdownSenseFlag, HVD_SENSE)*0xFF;
+  uint8_t byte5 = if(bit_is_set(shutdownSenseFlag, BMS_SENSE)*0xFF;
+  uint8_t byte6 = if(bit_is_set(shutdownSenseFlag, IMD_STATUS)*0xFF;
+  uint8_t byte7 = if(bit_is_set(shutdownSenseFlag, BMS_STATUS)*0xFF;
+  uint8_t msg[] = {byte0, byte1, byte2, byte3, byte4, byte5, byte6, byte7};
+  CAN_transmit(MOB_SEND_SHUTDOWN_STATUS,
+                CAN_ID_AIR_CONTROL_SENSE,
+                CAN_LEN_AIR_CONTROL_SENSE,
+                msg);
 }
 
 /*
 Sends state status CAN message.
 */
-void send_state_CAN_msg (void) {
-  #TODO
+void send_state_CAN_msg (uint8_t error_code, uint8_t state, uint8_t state_independent_check_response) {
+  uint8_t byte3 = if(bit_is_set(gFlag, AIRPLUS_CLOSED)*0xFF;
+  uint8_t byte4 = if(bit_is_set(gFlag, AIRMINUS_CLOSED)*0xFF;
+  uint8_t msg[] = {error_code, state, state_independent_check_response, byte3, byte4};
+  CAN_transmit(MOB_SEND_STATE,
+                CAN_ID_AIR_CONTROL_CRITICAL,
+                CAN_LEN_AIR_CONTROL_CRITICAL,
+                msg);
 }
 
 /*********** SOME RANDOM INIT CRAP TO REVIEW LATER **************/ #TODO
@@ -358,10 +477,10 @@ int main (void) {
 			
 			gFlag &= ~_BV(UPDATE_STATUS);
 			#TODO // consider always checking for PANIC address from all other boards and adding that as a PANIC transition
-			#TODO // should we stop doing state independent checks after fault? maybe we should do while(state != PANIC)
 			state_independent_check_response = state_independent_checks();
 			if (state_independent_check_response != 0) {
 				state = PANIC;
+        panic_transition = FAILED_STATE_INDEPENDENT_CHECKS;
 			}
 			switch(state) {
 				case LV_ON_DEENERGIZED:
@@ -385,9 +504,11 @@ int main (void) {
 					}
 					break;
 				case PRECHARGE_STUCK_OPEN_CHECK:
+          PRECHARGE_PORT |= _BV(PRECHARGE_CTRL); // close precharge relay
 					switch (check_precharge_stuck_open()) {
 						case -1: // cancelled
 							state = DISCHARGE_STUCK_OPEN_CHECK;
+              PRECHARGE_PORT &= ~_BV(PRECHARGE_CTRL); // open precharge relay
 							break;
 						case 0: // status OK
 							state = PRECHARGE;
@@ -402,6 +523,7 @@ int main (void) {
 					switch (do_precharge()) {
 						case -1: // cancelled
 							state = DISCHARGE_STUCK_OPEN_CHECK;
+              PRECHARGE_PORT &= ~_BV(PRECHARGE_CTRL); // open precharge relay
 							break;
 						case 0: // status OK
 							AIRMINUS_PORT |= _BV(AIRMINUS_LSD); // close AIR-
@@ -452,8 +574,8 @@ int main (void) {
 					PRECHARGE_PORT &= ~_BV(PRECHARGE_CTRL);
 					break;
 			}
-			#TODO // send can messages
-			#TODO // logging
+			send_shutdown_CAN_msg();
+      send_state_CAN_msg(panic_transition, state, state_independent_check_response);
 		}
 	}
 }
