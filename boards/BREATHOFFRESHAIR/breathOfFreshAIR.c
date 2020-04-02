@@ -7,7 +7,7 @@
 #include "can_api.h"
 #include "log_uart.h"
 
-/*********** MARCO POLOS *************/
+/*********** MACRO .... POLO *************/
 
 /**************** Outputs **************/
 #define PRECHARGE_CTRL			PB2
@@ -21,7 +21,7 @@
 #define PIN_AIRPLUS_AUX_CONTACTS				 PC4 // PCINT12
 #define INREG_AIRPLUS_AUX_CONTACTS			PINC // INREG -> input register
 #define PIN_AIRMINUS_AUX_CONTACTS			   PC5 // PCINT13
-#define INREG_AIRPMINUS_AUX_CONTACTS	 	PINC
+#define INREG_AIRMINUS_AUX_CONTACTS	 	  PINC
 
 #define PIN_BMS_STATUS		  	PC0 // PCINT8
 #define INREG_BMS_STATUS	   PINC
@@ -75,6 +75,16 @@
 #define IMD_STATUS 6
 #define BMS_STATUS 7
 
+// state independent check response flag bit names
+#define AIRPLUS_WELD 0
+#define AIRPLUS_STUCK_OPEN 1
+#define AIRMINUS_WELD 2
+#define AIRMINUS_STUCK_OPEN 3
+#define IMD_POWER_STAGE_FAILURE 4
+#define IMD_CONTROL_LOST 5
+#define BMS_POWER_STAGE_FAILURE 6
+#define BMS_CONTROL_LOST 7
+
 // PANIC transitions
 // iN THE STYLE OF mATLAB
 #define FAILED_PRECHARGE_STUCK_CLOSED_CHECK 1
@@ -84,8 +94,7 @@
 #define DISCHARGE_TIMEOUT 5
 #define FAILED_STATE_INDEPENDENT_CHECKS 6
 
-
-// Globals
+/************* GLOBALS ************/
 volatile uint8_t gFlag = 0x00;
 volatile uint8_t shutdownSenseFlag = 0x00;
 volatile uint16_t bus_voltage = 0xffff;
@@ -93,7 +102,7 @@ volatile uint16_t pack_voltage = 0xffff;
 volatile uint16_t timer1CompareMatchCount = 0x00;
 uint16_t timer1CompareMatchCountThreshold = 0x00;
 const uint8_t number_of_bms_can_messages = 24;
-const uint16_t bms_can_messages[][] = {
+const uint16_t bms_can_messages[][2] = {
   {CAN_ID_BMS_VOLTAGES_1_1, CAN_LEN_BMS_VOLTAGES_1_1},
   {CAN_ID_BMS_VOLTAGES_1_2, CAN_LEN_BMS_VOLTAGES_1_2},
   {CAN_ID_BMS_VOLTAGES_1_3, CAN_LEN_BMS_VOLTAGES_1_3},
@@ -118,7 +127,7 @@ const uint16_t bms_can_messages[][] = {
   {CAN_ID_BMS_VOLTAGES_6_2, CAN_LEN_BMS_VOLTAGES_6_2},
   {CAN_ID_BMS_VOLTAGES_6_3, CAN_LEN_BMS_VOLTAGES_6_3},
   {CAN_ID_BMS_VOLTAGES_6_4, CAN_LEN_BMS_VOLTAGES_6_4}
-}
+};
 
 /************ ISRs ************/
 ISR(PCINT0_vect) { // PCINT0-7 -> TSMS_SENSE, IMD_SENSE, TSCONN_SENSE, HVDCONN_SENSE, HVD_SENSE
@@ -210,6 +219,7 @@ ISR(CAN_INT_vect) {
         uint8_t cell_4_high_byte = CANMSG;
 	      uint8_t cell_4_low_byte = CANMSG;
 
+        // combine bytes and bit shift to right by 13 to get voltage x10
 	      pack_voltage += (cell_1_low_byte | (cell_1_high_byte<<8)) >> 13;
         pack_voltage += (cell_2_low_byte | (cell_2_high_byte<<8)) >> 13;
         pack_voltage += (cell_3_low_byte | (cell_3_high_byte<<8)) >> 13;
@@ -221,42 +231,34 @@ ISR(CAN_INT_vect) {
 }
 
 ISR(TIMER0_COMPA_vect) {
-    /*
-    Timer/Counter0 compare match A
-    If the clock frequency is 4MHz then this is called 16 times per second
-    MATH: (4MHz/1024)/255 = ~16
-    */
-
-		gFlag |= _BV(UPDATE_STATUS);
+    gFlag |= _BV(UPDATE_STATUS);
 }
 
-ISR(TIMER1_OVF_vect) {
-		timer1OverflowCount++;
-    if (timer1OverflowCount = timer1OverflowCountThreshold) {
+ISR(TIMER1_COMPA_vect) {
+		timer1CompareMatchCount++;
+    if (timer1CompareMatchCount == timer1CompareMatchCountThreshold) {
       gFlag |= _BV(GENERAL_TIMER_COMPLETE);
     }
-    #TODO
 }
 
 /********** TiMeRs ************/
 void initTimer0(void) {
-    TCCR0A = _BV(WGM01);    // Set up 8-bit timer in CTC mode
-    TCCR0B = 0x05;          // clkio/1024 prescaler
-    TIMSK0 |= _BV(OCIE0A);  // Every 1024 cycles, OCR0A increments
-    OCR0A = 0xff; //dec 39  // until 0xff, 255, which then calls for
-                            // the TIMER0_COMPA_vect interrupt
-			    // currently running at 100Hz
+    TCCR0A = _BV(WGM01); // Clear Timer on Compare match (CTC) mode
+    TCCR0B |= _BV(CS02) | _BV(CS00); // clkio/1024 prescaler
+    OCR0A = 244; // set value of compare match A
+    // 4MHz CPU, prescaler 1024, compare match on 255 -> (4000000/1024/244) = 16 Hz
+    TIMSK0 |= _BV(OCIE0A); // enable interrupt on compare match A
 }
 
 void initTimer1(void) {
-		// Normal operation so no need to set TCCR1A
-		TCCR1B |= _BV(CS10); // no prescaler set
+    TCCR1B |= _BV(WGM12); // Clear Timer on Compare match (CTC) mode
+		TCCR1B |= _BV(CS10); // prescaler set to 1
+    // set value of compare match A
     uint16_t output_compare_match = 4000;
     OCR1AL = output_compare_match & 0xFF;
     OCR1AH = (output_compare_match >> 8);
-		// 4MHz CPU, prescaler 1, 16-bit timer overflow -> (4000000/8)/(2^16-1) =  7.63 Hz
-		TIMSK1 = 0x01; // enable interrupt on overflow
-    #TODO
+		// 4MHz CPU, prescaler 1, compare match on 4000 -> (4000000/4000) = 1000 Hz
+		TIMSK1 |= _BV(OCIE1A); // enable interrupt on compare match A
 }
 
 void resetTimer1(void) {
@@ -268,9 +270,6 @@ void resetTimer1(void) {
     gFlag &= ~_BV(GENERAL_TIMER_COMPLETE);
 }
 
-/*
-Calculates time threshold and resets timer 1
-*/
 void startTimer(uint16_t milliseconds) {
   timer1CompareMatchCountThreshold = milliseconds;
   resetTimer1();
@@ -282,42 +281,64 @@ void startTimer(uint16_t milliseconds) {
 Runs state independent checks and returns fault code or 0 for OK status.
 Checks AIR+/- weld/stuck open. Checks IMD/BMS power stage implausibility.
 
-return: uint8_t fault code or 0 for OK status if all checks passed
+return: uint8_t response flags or 0 for OK status if all checks passed
 */
 uint8_t state_independent_checks (void) {
-  #TODO
-  // check AIR+
-  // check AIR-
-  // check IMD
-  // check BMS
+  uint8_t response = 0x00;
+  if (bit_is_clear(shutdownSenseFlag, TSMS_SENSE) && bit_is_set(gFlag, AIRPLUS_CLOSED)) {
+    response |= _BV(AIRPLUS_WELD);
+  }
+  if (bit_is_set(shutdownSenseFlag, TSMS_SENSE) && bit_is_clear(gFlag, AIRPLUS_CLOSED)) {
+    response |= _BV(AIRPLUS_STUCK_OPEN);
+  }
+  if (bit_is_clear(AIRMINUS_PORT, AIRMINUS_LSD) && bit_is_set(gFlag, AIRMINUS_CLOSED)) {
+    response |= _BV(AIRMINUS_WELD);
+  }
+  if (bit_is_set(shutdownSenseFlag, TSMS_SENSE) && bit_is_set(AIRMINUS_PORT, AIRMINUS_LSD) && bit_is_clear(gFlag, AIRMINUS_CLOSED)) {
+    response |= _BV(AIRMINUS_STUCK_OPEN);
+  }
+  if (bit_is_clear(shutdownSenseFlag, IMD_STATUS) && bit_is_set(shutdownSenseFlag, IMD_SENSE)) {
+    response |= _BV(IMD_POWER_STAGE_FAILURE);
+  }
+  if (bit_is_set(shutdownSenseFlag, BMS_SENSE) && bit_is_set(shutdownSenseFlag, IMD_STATUS) && bit_is_clear(shutdownSenseFlag, IMD_SENSE)) {
+    response |= _BV(IMD_CONTROL_LOST);
+  }
+  if (bit_is_clear(shutdownSenseFlag, BMS_STATUS) && bit_is_set(shutdownSenseFlag, BMS_SENSE)) {
+    response |= _BV(BMS_POWER_STAGE_FAILURE);
+  }
+  if (bit_is_set(shutdownSenseFlag, TSCONN_SENSE) && bit_is_set(shutdownSenseFlag, BMS_STATUS) && bit_is_clear(shutdownSenseFlag, BMS_SENSE)) {
+    response |= _BV( BMS_CONTROL_LOST);
+  }
+  return response;
 }
 
 /*
-Somehow gets CAN message information, sums pack voltage and returns it
+Iterate through reading BMS CAN messages
+CAN interrupt sums voltages and stores the sum in pack_voltage
 
-return: uint8_t voltage of pack (maybe x10 or something idfk)
+return: uintt16_t pack voltage x 10
 */
-uint8_t* get_pack_voltage (void) {
+uint16_t get_pack_voltage (void) {
   pack_voltage = 0;
   for (int i; i < number_of_bms_can_messages; i++) {
-    gFlag &= ~_BV(BMS_VOLTAGE_RECEIVED);
+    gFlag &= ~_BV(BMS_MESSAGE_RECEIVED);
     CAN_wait_on_receive(MOB_BMS_VOLTAGE,
   	                          bms_can_messages[i][0], // id
   	                          bms_can_messages[i][1], // length
   	                          CAN_MSK_SINGLE);
-    while (bit_is_clear(gFlag, BMS_VOLTAGE_RECEIVED)) {
+    while (bit_is_clear(gFlag, BMS_MESSAGE_RECEIVED)) {
       // do nothing, waiting for message to be received
     }
   }
-  return *pack_voltage;
+  return pack_voltage;
 }
 
 /*
 Listen for bus voltage from motor controller
 
-return: uint16_t bus voltage (I think from motor controller it's x10) #TODO
+return: uint16_t bus voltage x 10
 */
-uint16_t* get_bus_voltage (void) {
+uint16_t get_bus_voltage (void) {
 	gFlag &= ~_BV(BUS_VOLTAGE_RECEIVED);
   CAN_wait_on_receive(MOB_MC_VOLTAGE,
 	                          CAN_ID_MC_VOLTAGE,
@@ -326,96 +347,123 @@ uint16_t* get_bus_voltage (void) {
   while (bit_is_clear(gFlag, BUS_VOLTAGE_RECEIVED)) {
     // do nothing, waiting for message to be received
   }
-  return *bus_voltage;
+  return bus_voltage;
 }
 
 /*
-Does precharge. #TODO better dick string
+Checks the bus voltage continuously until it reaches 90% of the
+pack voltage. Times out after 2 seconds and returns a fault if the
+bus voltage does not reach 90% of the pack voltage in that time.
+Precharge is cancelled if there is no longer voltage present after
+the TSMS.
 
 return: 0 if OK status, 1 if fault, -1 if cancelled
 */
 int8_t do_precharge (void) {
-  uint16_t *pack_voltage = get_pack_voltage();
+  uint16_t pack_voltage = get_pack_voltage();
   startTimer(2000);
-	if (bit_is_clear(shutdownSenseFlag, TSMS_SENSE)) {
-		return -1;
-	} else if (*get_bus_voltage()*10 >= pack_voltage*9) { // compare bus voltage to 90% of pack voltage
-		return 0;
-	} else if (bit_is_set(gFlag, GENERAL_TIMER_COMPLETE)) {
-		return 1;
-	}
+  while(bit_is_clear(gFlag, GENERAL_TIMER_COMPLETE)) {
+  	if (bit_is_clear(shutdownSenseFlag, TSMS_SENSE)) {
+  		return -1;
+  	} else if (get_bus_voltage()*10 >= pack_voltage*9) { // compare bus voltage to 90% of pack voltage
+  		return 0;
+  	}
+  }
+  return 1;
 }
 
 /*
-Does discharge. #TODO better dick string
+Checks the bus voltage continuously until it is less than 60V.
+Times out after 5 seconds and returns a fault if the voltage
+doesn't get below 60V in that time.
 
 return: 0 if OK status, 1 if fault
 */
 uint8_t do_discharge (void) {
-  #TODO
+  startTimer(5000);
+  while(bit_is_clear(gFlag, GENERAL_TIMER_COMPLETE)) {
+    if (get_bus_voltage() < 600) {
+  		return 0;
+  	}
+  }
+  return 1;
 }
 
 /*
-Checks if precharge is stuck open.
+Checks if bus voltage is increasing afer the precharge relay
+has been closed. Times out after 100 ms and returns a fault if
+the voltage is not increasing.
+Precharge is cancelled if there is no longer voltage present after
+the TSMS.
 
 return: 0 if OK status, 1 if fault, -1 if cancelled
 */
 int8_t check_precharge_stuck_open (void) {
   startTimer(100);
-	if (bit_is_clear(shutdownSenseFlag, TSMS_SENSE)) {
-		return -1;
-	} else if (*get_bus_voltage() > 0) {
-		return 0;
-	} else if (bit_is_set(gFlag, GENERAL_TIMER_COMPLETE)) {
-		return 1;
-	}
+  while(bit_is_clear(gFlag, GENERAL_TIMER_COMPLETE)) {
+  	if (bit_is_clear(shutdownSenseFlag, TSMS_SENSE)) {
+  		return -1;
+  	} else if (get_bus_voltage() > 0) {
+  		return 0;
+  	}
+  }
+  return 1;
 }
 
 /*
-Checks if precharge is stuck closed.
+Checks that the bus voltage is not increasing before the precharge relay
+has been closed. Times out after 100 ms and returns status okay if the
+voltage did not increase.
+Precharge is cancelled if there is no longer voltage present after
+the TSMS.
 
 return: 0 if OK status, 1 if fault, -1 if cancelled
 */
 int8_t check_precharge_stuck_closed (void) {
-	startTimer(1000);
-	if (bit_is_clear(shutdownSenseFlag, TSMS_SENSE)) {
-		return -1;
-	} else if (*get_bus_voltage() > 0) {
-		return 1;
-	} else if (bit_is_set(gFlag, GENERAL_TIMER_COMPLETE)) {
-		return 0;
-	}
+	startTimer(100);
+  while(bit_is_clear(gFlag, GENERAL_TIMER_COMPLETE)) {
+  	if (bit_is_clear(shutdownSenseFlag, TSMS_SENSE)) {
+  		return -1;
+  	} else if (get_bus_voltage() > 0) {
+  		return 1;
+  	}
+  }
+  return 0;
 }
 
 /*
-Checks if discharge is stuck open.
+Checks that the bus voltage is decreasing during discharge.
+Times out after 100 ms and returns a fault if the bus voltage
+is not decreasing.
+Discharge is skipped if the bus voltage is already 0.
 
 return: 0 if OK status, 1 if fault, -1 if bus voltage already 0
 */
 int8_t check_discharge_stuck_open (void) {
   startTimer(100);
-  uint16_t *bus_voltage = get_bus_voltage();
-	if (*bus_voltage == 0) {
-		return -1;
-	} else if (*get_bus_voltage() < *bus_voltage) { #TODO // deal with bus voltage pointer issue
-		return 0;
-	} else if (bit_is_set(gFlag, GENERAL_TIMER_COMPLETE)) {
-		return 1;
-	}
+  uint16_t bus_voltage = get_bus_voltage();
+  while(bit_is_clear(gFlag, GENERAL_TIMER_COMPLETE)) {
+  	if (bus_voltage == 0) {
+  		return -1;
+  	} else if (get_bus_voltage() < bus_voltage) {
+  		return 0;
+  	}
+  }
+  return 1;
 }
 
 /*
 Sends shutdown node status CAN message.
 */
 void send_shutdown_CAN_msg (void) {
-  uint8_t byte0 = if(bit_is_set(shutdownSenseFlag, TSMS_SENSE)*0xFF;
-  uint8_t byte1 = if(bit_is_set(shutdownSenseFlag, IMD_SENSE)*0xFF;
-  uint8_t byte2 = if(bit_is_set(shutdownSenseFlag, TSCONN_SENSE)*0xFF;
-  uint8_t byte3 = if(bit_is_set(shutdownSenseFlag, HVDCONN_SENSE)*0xFF;
-  uint8_t byte4 = if(bit_is_set(shutdownSenseFlag, HVD_SENSE)*0xFF;
-  uint8_t byte5 = if(bit_is_set(shutdownSenseFlag, BMS_SENSE)*0xFF;
-  uint8_t byte6 = if(bit_is_set(shutdownSenseFlag, IMD_STATUS)*0xFF;
-  uint8_t byte7 = if(bit_is_set(shutdownSenseFlag, BMS_STATUS)*0xFF;
+  uint8_t byte0 = bit_is_set(shutdownSenseFlag, TSMS_SENSE)*0xFF;
+  uint8_t byte1 = bit_is_set(shutdownSenseFlag, IMD_SENSE)*0xFF;
+  uint8_t byte2 = bit_is_set(shutdownSenseFlag, TSCONN_SENSE)*0xFF;
+  uint8_t byte3 = bit_is_set(shutdownSenseFlag, HVDCONN_SENSE)*0xFF;
+  uint8_t byte4 = bit_is_set(shutdownSenseFlag, HVD_SENSE)*0xFF;
+  uint8_t byte5 = bit_is_set(shutdownSenseFlag, BMS_SENSE)*0xFF;
+  uint8_t byte6 = bit_is_set(shutdownSenseFlag, IMD_STATUS)*0xFF;
+  uint8_t byte7 = bit_is_set(shutdownSenseFlag, BMS_STATUS)*0xFF;
   uint8_t msg[] = {byte0, byte1, byte2, byte3, byte4, byte5, byte6, byte7};
   CAN_transmit(MOB_SEND_SHUTDOWN_STATUS,
                 CAN_ID_AIR_CONTROL_SENSE,
@@ -427,8 +475,8 @@ void send_shutdown_CAN_msg (void) {
 Sends state status CAN message.
 */
 void send_state_CAN_msg (uint8_t error_code, uint8_t state, uint8_t state_independent_check_response) {
-  uint8_t byte3 = if(bit_is_set(gFlag, AIRPLUS_CLOSED)*0xFF;
-  uint8_t byte4 = if(bit_is_set(gFlag, AIRMINUS_CLOSED)*0xFF;
+  uint8_t byte3 = bit_is_set(gFlag, AIRPLUS_CLOSED)*0xFF;
+  uint8_t byte4 = bit_is_set(gFlag, AIRMINUS_CLOSED)*0xFF;
   uint8_t msg[] = {error_code, state, state_independent_check_response, byte3, byte4};
   CAN_transmit(MOB_SEND_STATE,
                 CAN_ID_AIR_CONTROL_CRITICAL,
@@ -436,7 +484,7 @@ void send_state_CAN_msg (uint8_t error_code, uint8_t state, uint8_t state_indepe
                 msg);
 }
 
-/*********** SOME RANDOM INIT CRAP TO REVIEW LATER **************/ #TODO
+/*********** IO Settings **************/
 void setOutputs(void) {
 		//Sets these pins at outputs
 		DDR_PRECHARGE |= _BV(PRECHARGE_CTRL);
@@ -476,7 +524,8 @@ int main (void) {
 		if(bit_is_set(gFlag, UPDATE_STATUS)){
 			
 			gFlag &= ~_BV(UPDATE_STATUS);
-			#TODO // consider always checking for PANIC address from all other boards and adding that as a PANIC transition
+			// consider always checking for PANIC address from all other boards
+      // and adding that as a PANIC transition
 			state_independent_check_response = state_independent_checks();
 			if (state_independent_check_response != 0) {
 				state = PANIC;
