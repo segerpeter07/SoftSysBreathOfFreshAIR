@@ -30,8 +30,8 @@ Our new firmware (found [here](../boards/BREATHOFFRESHAIR/breathOfFreshAir.c)), 
 Read our code [here](../boards/BREATHOFFRESHAIR/breathOfFreshAir.c).
 
 ### State Diagram
-![State Diagram](./State_Diagram.png)
-Larger diagram can be found [here](./State_Diagram.png).
+![State Diagram](./State_Diagram2.png)
+Larger diagram can be found [here](./State_Diagram2.png).
 
 The state diagram was a very important step for our project. Since this board manages quite a complex set of states and potential transitions, displaying this easily for team members to understand what is going on was very important. Explicitly writing all the states and transitions also allowed us to notice the repeated state and transitions that exist in the system. This would allow us to design a more efficient FSM without redudent nodes and transitions leading to more efficient firmware.
 
