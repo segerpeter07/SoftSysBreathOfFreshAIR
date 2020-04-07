@@ -30,8 +30,8 @@ Our new firmware (found [here](../boards/BREATHOFFRESHAIR/breathOfFreshAir.c)), 
 Read our code [here](../boards/BREATHOFFRESHAIR/breathOfFreshAir.c).
 
 ### State Diagram
-![State Diagram](./State_Diagram.png)
-Larger diagram can be found [here](./State_Diagram.png).
+![State Diagram](./state_diagram2.png)
+Larger diagram can be found [here](./state_diagram2.png).
 
 The state diagram was a very important step for our project. Since this board manages quite a complex set of states and potential transitions, displaying this easily for team members to understand what is going on was very important. Explicitly writing all the states and transitions also allowed us to notice the repeated state and transitions that exist in the system. This would allow us to design a more efficient FSM without redundant nodes and transitions leading to more efficient firmware.
 
@@ -96,5 +96,5 @@ This simple flag setting architecture allowed us to more efficiently use our mes
 ## Reflection
 We are both quite happy with the outcome of our project since we feel that we have had a positive impact on the team and are leaving behind more useable, readable, and robust code. We both wanted to gain a better understanding of managing state across a complex program in C and feel that we have learned quite a bit about this. While our main style of architecture hasn't changed much (still a FSM), we now place more value in the actual planning and architecting of these types of complex systems. We especially value the process of actually creating a state diagram to help better understand the system, reduce work and complexity, and increase transparency about what our code actually does to others. These are all valuable skills and we are happy to have learned and applied them to this project.
 
-[Trello Board](https://trello.com/b/P1uwdoRG/breath-of-fresh-air) & [Github]()
+[Trello Board](https://trello.com/b/P1uwdoRG/breath-of-fresh-air) & [Github](https://github.com/segerpeter07/SoftSysBreathOfFreshAIR)
 
