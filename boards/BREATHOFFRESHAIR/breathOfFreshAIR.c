@@ -219,11 +219,11 @@ ISR(CAN_INT_vect) {
         uint8_t cell_4_high_byte = CANMSG;
 	      uint8_t cell_4_low_byte = CANMSG;
 
-        // combine bytes and bit shift to right by 13 to get voltage x10
-	      pack_voltage += (cell_1_low_byte | (cell_1_high_byte<<8)) >> 13;
-        pack_voltage += (cell_2_low_byte | (cell_2_high_byte<<8)) >> 13;
-        pack_voltage += (cell_3_low_byte | (cell_3_high_byte<<8)) >> 13;
-        pack_voltage += (cell_4_low_byte | (cell_4_high_byte<<8)) >> 13;
+        // combine bytes and divdes by 10000 to get voltage x10
+	      pack_voltage += (cell_1_low_byte | (cell_1_high_byte<<8)) / 10000;
+        pack_voltage += (cell_2_low_byte | (cell_2_high_byte<<8)) / 10000;
+        pack_voltage += (cell_3_low_byte | (cell_3_high_byte<<8)) / 10000;
+        pack_voltage += (cell_4_low_byte | (cell_4_high_byte<<8)) / 10000;
 
 	      CANSTMOB = 0x00;
         gFlag |= _BV(BMS_MESSAGE_RECEIVED);
